@@ -1,0 +1,46 @@
+{
+  "name": "@tommyfang/git-clis-dsh",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness (dsh) plugin for GitHub (gh) and Gitea (tea) CLIs: detect/install, guided token config, and issue operations.",
+  "type": "module",
+  "license": "MIT",
+  "author": "TommyFang2077",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "github",
+    "gitea",
+    "gh",
+    "tea",
+    "issues",
+    "cli",
+    "forge"
+  ],
+  "files": [
+    "dsh",
+    "skills",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./dsh/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TommyFang2077/git-clis-dsh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TommyFang2077/git-clis-dsh/issues"
+  },
+  "homepage": "https://github.com/TommyFang2077/git-clis-dsh#readme"
+}

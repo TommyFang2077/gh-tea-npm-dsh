@@ -1,0 +1,6 @@
+# dsh bundle layer: mount the git-clis plugin (dsh/index.js via the package
+# root export). Host-only plugin: registers the gh/tea forge tools and the
+# companion git-clis skill.
+- insert:
+    - id: git-clis
+      name: '@tommyfang/git-clis-dsh'

@@ -4,6 +4,8 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![topic](https://img.shields.io/badge/topic-dsh--plugin-4b32c3)](https://github.com/topics/dsh-plugin)
 
+[English](./README.md) · [简体中文](./README.zh-CN.md)
+
 A [DeepSeek Harness](https://github.com/deepseek-ai) (dsh) plugin that brings **GitHub (`gh`)**, **Gitea (`tea`)**, and **npm** into the agent. It detects and installs the CLIs, guides the user through authentication with explicit choices, and operates issues and publishes packages.
 
 ## Features

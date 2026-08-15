@@ -1,10 +1,12 @@
-// DeepSeek Harness (dsh) plugin: GitHub (gh) + Gitea (tea) forge tools.
+// DeepSeek Harness (dsh) plugin: GitHub (gh) + Gitea (tea) + npm CLI tools.
 //
 // Registers model tools to detect/install gh and tea, manage their auth tokens
 // (env import, browser OAuth device flow, manual), and operate issues (list,
-// view, create, comment, close, reopen) on GitHub and Gitea. Also registers a
-// companion `git-clis` skill that documents the issue workflow and defers to
-// each CLI's own `--help` for the exact command surface.
+// view, create, comment, close, reopen) on GitHub and Gitea. It also manages
+// npm: detect/login (browser OAuth device flow or automation token), and
+// publish packages — with a note that npm tokens now expire after 90 days and
+// must be rotated. Registers a companion `gh-tea-npm` skill that documents the
+// workflows and defers to each CLI's own `--help` for the exact command surface.
 //
 // Loaded via cordis.patch.yml (see package.json `dsh.bundle` manifest). It runs
 // in the real Cordis runtime, so it uses `ctx.tools.register` / `ctx.skills`
@@ -12,7 +14,7 @@
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 
-export const name = 'git-clis'
+export const name = 'gh-tea-npm'
 export const inject = ['tools', 'skills']
 
 export function apply(ctx, config = {}) {
@@ -37,6 +39,7 @@ export function apply(ctx, config = {}) {
       try {
         child = spawn('/bin/sh', ['-c', cmd], {
           env: buildEnv(opts.env),
+          cwd: opts.cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
           timeout: opts.timeoutMs,
           signal: opts.signal,
@@ -162,13 +165,32 @@ export function apply(ctx, config = {}) {
     return out.join('\n')
   }
 
-  function startGhWebFlow() {
-    const child = spawn('/bin/sh', ['-c', 'gh auth login --hostname github.com --git-protocol https --web'], {
+  // Shared OAuth device-flow poller: gh and npm both reuse it. `verifyCmd` is
+  // run once the background login process exits 0 (e.g. `gh auth status`).
+  async function pollFlow(flowId, verifyCmd, exec) {
+    const f = flows[flowId]
+    if (!f) return '未找到该配置流程（可能已过期或已清理），请重新发起。'
+    if (f.closed) {
+      delete flows[flowId]
+      if (f.exitCode === 0) {
+        const a = await run(verifyCmd, { timeoutMs: 20000, signal: (exec && exec.signal) || undefined })
+        return `配置完成 ✓\n${trim(a.stdout || a.stderr)}`
+      }
+      return `登录未完成或已取消 (exit ${f.exitCode})\n${f.buf}`
+    }
+    return `仍在等待浏览器授权（设备码有效期内）...\n${f.buf}`
+  }
+
+  function startWebFlow(bin, flowPrefix) {
+    const loginCmd = bin === 'gh'
+      ? 'gh auth login --hostname github.com --git-protocol https --web'
+      : 'npm login --auth-type=web 2>&1'
+    const child = spawn('/bin/sh', ['-c', loginCmd], {
       env: buildEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     flowSeq += 1
-    const flowId = `flow-${flowSeq}`
+    const flowId = `${flowPrefix}-${flowSeq}`
     const f = { child, buf: '', closed: false, exitCode: null }
     flows[flowId] = f
     child.stdout.on('data', (c) => { f.buf += c })
@@ -177,29 +199,21 @@ export function apply(ctx, config = {}) {
     return new Promise((resolve) => {
       const t0 = Date.now()
       const poll = () => {
-        const m = f.buf.match(/one-time code:\s*([A-Z0-9-]+)/)
-        const u = f.buf.match(/https:\/\/github\.com\/login\/device/)
-        if (m && u) return resolve(`请在浏览器打开 ${u[0]} 并输入一次性设备码 ${m[1]}。授权完成后调用 gitclis_configure method=poll flow_id=${flowId} 验证。`)
-        if (f.closed) return resolve(`未能获取设备码。输出:\n${f.buf}`)
-        if (Date.now() - t0 > 15000) return resolve(`未能获取设备码（超时）。输出:\n${f.buf}`)
+        const m = bin === 'gh'
+          ? f.buf.match(/one-time code:\s*([A-Z0-9-]+)/)
+          : f.buf.match(/https:\/\/www\.npmjs\.com\/login\?[^\s]+/)
+        if (m) {
+          const hint = bin === 'gh'
+            ? `请在浏览器打开 https://github.com/login/device 并输入一次性设备码 ${m[1]}。`
+            : `请在浏览器打开 ${m[0]} 登录并授权。`
+          return resolve(`${hint}完成后调用 ${bin === 'gh' ? 'gitclis_configure' : 'npm_configure'} method=poll flow_id=${flowId} 验证。`)
+        }
+        if (f.closed) return resolve(`未能获取登录链接。输出:\n${f.buf}`)
+        if (Date.now() - t0 > 15000) return resolve(`未能获取登录链接（超时）。输出:\n${f.buf}`)
         setTimeout(poll, 400)
       }
       poll()
     })
-  }
-
-  async function pollGhWebFlow(flowId, exec) {
-    const f = flows[flowId]
-    if (!f) return '未找到该配置流程（可能已过期或已清理），请重新调用 method=web。'
-    if (f.closed) {
-      delete flows[flowId]
-      if (f.exitCode === 0) {
-        const a = await run('gh auth status 2>&1', { timeoutMs: 20000, signal: (exec && exec.signal) || undefined })
-        return `配置完成 ✓\n${trim(a.stdout || a.stderr)}`
-      }
-      return `登录未完成或已取消 (exit ${f.exitCode})\n${f.buf}`
-    }
-    return `仍在等待浏览器授权（设备码有效期内）...\n${f.buf}`
   }
 
   async function authSummary(bin, exec) {
@@ -214,7 +228,8 @@ export function apply(ctx, config = {}) {
 
   const ENV_TOKEN_NAMES = ['GH_TOKEN', 'GITHUB_TOKEN', 'GITEA_TOKEN', 'TEA_TOKEN']
 
-  // ---- status ----
+  // ===== gh / tea =====
+
   registerTool({
     name: 'gitclis_status',
     description: 'Detect the GitHub (gh) and Gitea (tea) CLIs: installation, version, auth status, and token environment variables (values masked).',
@@ -235,10 +250,9 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- configure (guide) ----
   registerTool({
     name: 'gitclis_configure',
-    description: 'Interactive configuration guide for gh/tea: detect state and walk the user through install + auth with explicit choices. method=web starts the GitHub OAuth device flow and returns a one-time code; method=poll checks that flow; method=env imports env tokens; method=auto returns the guided plan.',
+    description: 'Interactive configuration guide for gh/tea: detect state and walk the user through install + auth with explicit choices. method=web starts the GitHub OAuth device flow; method=poll checks that flow; method=env imports env tokens; method=auto returns the guided plan.',
     parameters: {
       type: 'object',
       properties: {
@@ -256,11 +270,11 @@ export function apply(ctx, config = {}) {
       if (method === 'web') {
         const d = await detect('gh')
         if (!d.installed) return 'gh 未安装，请先调用 gitclis_install cli=gh'
-        return await startGhWebFlow()
+        return await startWebFlow('gh', 'flow')
       }
       if (method === 'poll') {
         if (!args.flow_id) return 'method=poll 需要 flow_id 参数（来自 method=web 的返回）'
-        return await pollGhWebFlow(args.flow_id, exec)
+        return await pollFlow(args.flow_id, 'gh auth status 2>&1', exec)
       }
       if (method === 'env') return await importEnvToken(prov, args.gitea_url, sig)
       if (method === 'manual') return '请用 ask_user_question 引导用户提供 personal access token，然后用 gitclis_set_token 写入（provider 和 token 由用户给出）。注意：手动粘贴会让 token 出现在聊天记录，优先推荐 method=env 或 method=web。'
@@ -268,7 +282,7 @@ export function apply(ctx, config = {}) {
       const out = []
       const gh = await detect('gh')
       const tea = await detect('tea')
-      out.push('# 配置引导')
+      out.push('# 配置引导 (gh/tea)')
       out.push('')
       out.push('## 当前状态')
       out.push(`- gh: ${gh.installed ? '已安装 ' + gh.version : '未安装'}`)
@@ -288,7 +302,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- install ----
   registerTool({
     name: 'gitclis_install',
     description: 'Install the GitHub CLI (gh) and/or the Gitea CLI (tea) if missing. Prefers Homebrew, falls back to an official no-sudo installer into ~/.local/bin.',
@@ -309,7 +322,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- set token ----
   registerTool({
     name: 'gitclis_set_token',
     description: 'Store an auth token for GitHub (gh) or Gitea (tea). The token is written to the CLI config and never echoed back.',
@@ -340,7 +352,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- env token ----
   registerTool({
     name: 'gitclis_token_env',
     description: 'Read token environment variables (presence only, values masked) or import an env token into the CLI auth config.',
@@ -366,7 +377,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- issue list ----
   registerTool({
     name: 'gitclis_issue_list',
     description: 'List issues on GitHub (gh) or Gitea (tea).',
@@ -406,7 +416,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- issue view ----
   registerTool({
     name: 'gitclis_issue_view',
     description: 'View one issue (optionally with comments) on GitHub (gh) or Gitea (tea).',
@@ -432,7 +441,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- issue create ----
   registerTool({
     name: 'gitclis_issue_create',
     description: 'Create an issue on GitHub (gh) or Gitea (tea).',
@@ -464,7 +472,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- issue comment ----
   registerTool({
     name: 'gitclis_issue_comment',
     description: 'Add a comment to an issue on GitHub (gh) or Gitea (tea).',
@@ -487,7 +494,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- issue close ----
   registerTool({
     name: 'gitclis_issue_close',
     description: 'Close an issue (optionally with a comment) on GitHub (gh) or Gitea (tea).',
@@ -517,7 +523,6 @@ export function apply(ctx, config = {}) {
     },
   })
 
-  // ---- issue reopen ----
   registerTool({
     name: 'gitclis_issue_reopen',
     description: 'Reopen an issue (optionally with a comment) on GitHub (gh) or Gitea (tea).',
@@ -547,21 +552,118 @@ export function apply(ctx, config = {}) {
     },
   })
 
+  // ===== npm =====
+
+  registerTool({
+    name: 'npm_status',
+    description: 'Detect node/npm, npm login state (whoami), and registry.',
+    parameters: { type: 'object', properties: {} },
+    async execute(_args, exec) {
+      const sig = (exec && exec.signal) || undefined
+      const node = await run('node --version 2>&1', { timeoutMs: 15000, signal: sig })
+      const npm = await run('npm --version 2>&1', { timeoutMs: 15000, signal: sig })
+      const reg = await run('npm config get registry 2>&1', { timeoutMs: 15000, signal: sig })
+      const who = await run('npm whoami 2>&1', { timeoutMs: 20000, signal: sig })
+      const loggedIn = who.code === 0 && trim(who.stdout)
+      const out = []
+      out.push('== node ==')
+      out.push(trim(node.stdout || node.stderr) || 'NOT installed')
+      out.push('== npm ==')
+      out.push(trim(npm.stdout || npm.stderr) || 'NOT installed')
+      out.push('== registry ==')
+      out.push(trim(reg.stdout || reg.stderr))
+      out.push('== login ==')
+      out.push(loggedIn ? `logged in as ${trim(who.stdout)}` : 'NOT logged in')
+      out.push('== token policy ==')
+      out.push('npm tokens now expire after at most 90 days. Rotate with npm_configure method=web or method=token before they lapse.')
+      return out.join('\n')
+    },
+  })
+
+  registerTool({
+    name: 'npm_configure',
+    description: 'Guided npm auth: method=web starts the browser OAuth device flow (npm login --auth-type=web); method=poll checks it; method=token writes an automation token to ~/.npmrc; method=auto returns the guided plan.',
+    parameters: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', enum: ['auto', 'web', 'token', 'poll'], description: 'auto = plan; web = browser OAuth device flow; token = write a token; poll = check a web flow.' },
+        token: { type: 'string', description: 'Access token for method=token.' },
+        flow_id: { type: 'string', description: 'Flow id from method=web, used with method=poll.' },
+      },
+    },
+    async execute(args, exec) {
+      const sig = (exec && exec.signal) || undefined
+      const method = args.method || 'auto'
+
+      if (method === 'web') return await startWebFlow('npm', 'npm')
+      if (method === 'poll') {
+        if (!args.flow_id) return 'method=poll 需要 flow_id 参数（来自 method=web 的返回）'
+        return await pollFlow(args.flow_id, 'npm whoami 2>&1', exec)
+      }
+      if (method === 'token') {
+        if (!args.token) return 'method=token 需要 token 参数'
+        const r = await run(`npm config set "//registry.npmjs.org/:_authToken" ${q(args.token)}`, { timeoutMs: 30000, signal: sig })
+        if (r.code !== 0) return `写入失败 (exit ${r.code}): ${trim(r.stderr || r.stdout)}`
+        const who = await run('npm whoami 2>&1', { timeoutMs: 20000, signal: sig })
+        return `OK. ${trim(who.stdout || who.stderr)}`
+      }
+
+      const out = []
+      const node = await run('node --version 2>&1', { timeoutMs: 15000, signal: sig })
+      const who = await run('npm whoami 2>&1', { timeoutMs: 20000, signal: sig })
+      const loggedIn = who.code === 0 && trim(who.stdout)
+      out.push('# 配置引导 (npm)')
+      out.push('')
+      out.push('## 当前状态')
+      out.push(`- node: ${trim(node.stdout || node.stderr) || '未安装'}`)
+      out.push(`- 登录: ${loggedIn ? '已登录 as ' + trim(who.stdout) : '未登录'}`)
+      out.push('')
+      out.push('## 下一步（用 ask_user_question 给用户呈现选项，一次一步）')
+      if (!loggedIn) {
+        out.push('1. 未登录 → 选认证方式:')
+        out.push('   a. 「浏览器登录(web)」→ 调 npm_configure method=web，拿到登录链接后引导用户浏览器授权，再调 method=poll 验证')
+        out.push('   b. 「Automation Token」→ 调 npm_configure method=token token=<token>（token 出现在聊天，web 更安全）')
+      } else {
+        out.push('1. 已登录。注意：npm token 最长 90 天有效，到期需轮换（重新 method=web 或 method=token）。')
+      }
+      out.push('2. 发布当前包 → npm_publish')
+      return out.join('\n')
+    },
+  })
+
+  registerTool({
+    name: 'npm_publish',
+    description: 'Publish the current package to npm (npm publish --access public).',
+    parameters: {
+      type: 'object',
+      properties: {
+        dry_run: { type: 'boolean', description: 'Run npm publish --dry-run instead of actually publishing.' },
+        cwd: { type: 'string', description: 'Package directory. Defaults to the current workspace.' },
+      },
+    },
+    async execute(args, exec) {
+      const dry = args.dry_run ? ' --dry-run' : ''
+      const opts = { timeoutMs: 180000 }
+      if (args.cwd) opts.cwd = args.cwd
+      return await execCmd(`npm publish --access public${dry}`, opts, exec)
+    },
+  })
+
   // ---- companion skill ----
   ctx.skills.register({
-    name: 'git-clis',
-    description: 'Operate issues and forge entities on GitHub (gh) and Gitea (tea) via the git-clis plugin tools, with a guided configure flow.',
-    whenToUse: 'When the user asks to list, view, create, comment on, close, or reopen issues on GitHub or Gitea, or to install/authenticate gh or tea.',
+    name: 'gh-tea-npm',
+    description: 'Operate GitHub (gh), Gitea (tea) and npm via the gh-tea-npm plugin tools, with guided config flows (including npm token rotation).',
+    whenToUse: 'When the user asks to list/view/create/comment/close/reopen issues on GitHub or Gitea, to install/authenticate gh/tea, or to log in to npm / publish / rotate npm tokens.',
     source: 'runtime',
     content: SKILL_CONTENT,
   })
 }
 
 const SKILL_CONTENT = [
-  '# GitHub (gh) & Gitea (tea) CLI',
+  '# GitHub (gh) + Gitea (tea) + npm CLI',
   '',
-  'Companion skill for the git-clis DSH plugin (TommyFang2077). Operates issues',
-  '(and other forge entities) on GitHub via gh and on Gitea via tea.',
+  'Companion skill for the gh-tea-npm DSH plugin (TommyFang2077). Operates issues on',
+  'GitHub via gh and on Gitea via tea, and manages npm auth / publishing.',
   '',
   'The CLIs are the source of truth for their exact command surface. Prefer their own',
   'help over anything here: commands and flags change between releases.',
@@ -570,34 +672,55 @@ const SKILL_CONTENT = [
   '    gh issue list --help     # exact flags for one subcommand',
   '    tea help issues          # Gitea issue commands',
   '    tea issues list --help',
+  '    npm help publish        # npm publish flags',
   '',
   '## When to use',
   '',
-  'Use this skill and the git-clis plugin tools whenever the user asks to read, create,',
-  'comment on, close, or reopen issues on GitHub or Gitea, or to set up / check forge auth.',
+  'Use this skill and the plugin tools whenever the user asks to read, create, comment',
+  'on, close, or reopen issues on GitHub or Gitea, to install/authenticate gh or tea,',
+  'or to log in to npm, publish a package, or rotate an npm token.',
   '',
-  '## Guided configuration (gitclis_configure)',
+  '## Guided configuration',
   '',
-  'Configure a CLI step by step with explicit choices. Never ask open-ended questions;',
-  'always present options via ask_user_question and advance one step at a time.',
+  'Configure step by step with explicit choices. Never ask open-ended questions; always',
+  'present options via ask_user_question and advance one step at a time.',
   '',
-  '1. Call gitclis_configure method=auto to get the current state and the next-step menu.',
-  '2. Present the menu as options. On the chosen branch, call the matching action:',
-  '   - install a missing CLI: gitclis_install cli=gh|tea|both',
+  'gh/tea (gitclis_configure):',
+  '',
+  '1. Call gitclis_configure method=auto for the state and next-step menu.',
+  '2. - install a missing CLI: gitclis_install cli=gh|tea|both',
   '   - env token:   gitclis_configure method=env provider=...',
-  '   - browser OAuth (GitHub): gitclis_configure method=web -> show code+URL to the',
-  '     user -> after they authorize, gitclis_configure method=poll flow_id=...',
-  '   - manual token: gitclis_set_token provider=... token=... (token then appears in chat;',
-  '     prefer env or web)',
-  '3. After auth, verify with gitclis_status.',
+  '   - browser OAuth (GitHub): gitclis_configure method=web -> show code+URL ->',
+  '     method=poll after the user authorizes',
+  '   - manual token: gitclis_set_token provider=... token=...',
+  '3. Verify with gitclis_status.',
+  '',
+  'npm (npm_configure):',
+  '',
+  '1. Call npm_configure method=auto for the state and next-step menu.',
+  '2. - browser OAuth: npm_configure method=web -> show login URL -> method=poll',
+  '   - automation token: npm_configure method=token token=<npm_...>',
+  '3. Publish with npm_publish (or npm_publish dry_run=true).',
+  '',
+  '## npm token policy (90 days)',
+  '',
+  'npm now enforces a maximum 90-day lifetime on access tokens, including automation',
+  'tokens. A token that expires breaks publishing. Rotate BEFORE it lapses:',
+  '',
+  '- generate a new Automation token at https://www.npmjs.com/settings/<user>/tokens/new',
+  '  and write it with npm_configure method=token; or',
+  '- re-run npm_configure method=web to mint a fresh browser login.',
   '',
   '## Plugin tools',
   '',
   '    gitclis_status        detect gh/tea, versions, auth, env tokens (masked)',
-  '    gitclis_configure     guided install + auth flow (auto/env/web/manual/poll)',
+  '    gitclis_configure     guided gh/tea install + auth flow (auto/env/web/manual/poll)',
   '    gitclis_install       one-click install of gh and/or tea',
   '    gitclis_set_token     store an auth token for gh and/or tea',
   '    gitclis_token_env     read/import tokens from the environment',
+  '    npm_status            detect node/npm, login state, registry',
+  '    npm_configure         guided npm auth (auto/web/token/poll)',
+  '    npm_publish           npm publish --access public',
   '',
   '## Authentication',
   '',
@@ -615,6 +738,13 @@ const SKILL_CONTENT = [
   '- tea keeps tokens in ~/.config/tea/config.yml; there is no first-class token env',
   '  var, so store it with tea login add, or set GITEA_TOKEN / TEA_TOKEN and import it',
   '  with gitclis_token_env.',
+  '',
+  'npm:',
+  '',
+  '- browser login:  npm login --auth-type=web   (no token in chat)',
+  '- automation token: npm config set //registry.npmjs.org/:_authToken <token>',
+  '- check login:    npm whoami',
+  '- publish:        npm publish --access public',
   '',
   '## Issue workflow recipes',
   '',
@@ -656,8 +786,8 @@ const SKILL_CONTENT = [
   '## Safety notes',
   '',
   '- Read first: prefer list / view to understand state before mutating.',
-  '- close / reopen / comment mutate state; confirm the target issue number first.',
-  '- Never print a token back into the conversation; the plugin masks env token values.',
+  '- close / reopen / comment / npm publish mutate state; confirm targets first.',
+  '- Never print a token back into the conversation; prefer web/device flows.',
   '- Flags can drift between releases; when a command fails with an unknown flag, read',
-  '  gh <cmd> --help or tea <cmd> --help and adapt.',
+  '  gh <cmd> --help, tea <cmd> --help, or npm <cmd> --help and adapt.',
 ].join('\n')

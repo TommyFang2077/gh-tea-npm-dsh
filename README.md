@@ -1,65 +1,56 @@
-# git-clis-dsh
+# gh-tea-npm-dsh
 
-DeepSeek Harness (dsh) 插件：用 `gh`（GitHub）和 `tea`（Gitea）操作 issue 与仓库实体，带**引导式配置**。
+DeepSeek Harness (dsh) 插件：用 `gh`（GitHub）、`tea`（Gitea）、`npm` 管理 issue、仓库与 npm 包，带**引导式配置**。
 
-[`dsh-plugin`](https://github.com/topics/dsh-plugin) · GitHub · Gitea · gh · tea
+[`dsh-plugin`](https://github.com/topics/dsh-plugin) · GitHub · Gitea · npm · gh · tea · issues
+
+> **GitHub (`gh`) + Gitea (`tea`) + npm CLIs for DeepSeek Harness (dsh)** — guided auth/config and issue & package tools.
 
 ## 功能
 
-- **检测** `gh` / `tea` 是否安装、版本、鉴权状态、环境 token（值打码）
-- **一键安装**（优先 Homebrew，回退到免 sudo 二进制安装到 `~/.local/bin`）
-- **引导式配置 token**：环境变量导入 / GitHub 浏览器 OAuth 设备流 / 手动，一步一步带选项推进
-- **操作 issue**：`list` / `view` / `create` / `comment` / `close` / `reopen`
-- **配套技能** `git-clis`：记录 issue 工作流配方，并指向各 CLI 自带的 `--help` 作为版本匹配的命令源
+- **gh / tea**：检测安装、一键安装、引导式 token 配置（环境变量 / 浏览器 OAuth 设备流 / 手动）、issue 操作
+- **npm**：检测登录状态、引导式登录（浏览器 OAuth 设备流 / Automation token）、发布包、**90 天 token 轮换提醒**
+- 配套技能 `gh-tea-npm`
 
 ## 工具
 
 | 工具 | 说明 |
 | --- | --- |
 | `gitclis_status` | 检测 gh/tea、版本、鉴权、环境 token（打码） |
-| `gitclis_configure` | 引导式配置：`auto` / `env` / `web` / `manual` / `poll` |
+| `gitclis_configure` | gh/tea 引导式配置：`auto`/`env`/`web`/`manual`/`poll` |
 | `gitclis_install` | 一键安装 gh/tea |
-| `gitclis_set_token` | 写入 token 到 CLI 配置（不回显） |
+| `gitclis_set_token` | 写入 token 到 gh/tea 配置（不回显） |
 | `gitclis_token_env` | 读取/导入环境变量 token |
-| `gitclis_issue_list` | 列 issue |
-| `gitclis_issue_view` | 查看单个 issue |
-| `gitclis_issue_create` | 创建 issue |
-| `gitclis_issue_comment` | 添加评论 |
-| `gitclis_issue_close` | 关闭 issue |
-| `gitclis_issue_reopen` | 重新打开 issue |
+| `gitclis_issue_list` / `_view` / `_create` / `_comment` / `_close` / `_reopen` | 操作 GitHub / Gitea issue |
+| `npm_status` | 检测 node/npm、登录状态、registry |
+| `npm_configure` | npm 引导式认证：`auto`/`web`/`token`/`poll` |
+| `npm_publish` | 发布包（`npm publish --access public`） |
+
+## npm token 政策（90 天）
+
+npm 现在强制 access token 最长 **90 天**有效（含 Automation token），过期会中断发布。需在到期前轮换：
+
+- 生成新 Automation token：`https://www.npmjs.com/settings/<user>/tokens/new`，再用 `npm_configure method=token`
+- 或重新 `npm_configure method=web` 浏览器登录
+
+`npm_status` 会提示该政策；`npm_configure` 引导轮换。
 
 ## 安装
 
-作为 dsh 插件包（发布到 npm 后）：
+作为 dsh 插件包（npm 发布后）：
 
 ```bash
-npx -y @deepseek-ai/dsh plugin add @tommyfang/git-clis-dsh
+npx -y @deepseek-ai/dsh plugin add @tommyfang/gh-tea-npm-dsh
 ```
 
 或作为临时动态插件：把 `dsh/index.js` 的插件体通过 `cordis_define` 注入当前会话。
 
-## 配置引导流程
-
-1. `gitclis_configure method=auto` → 获取当前状态和「下一步选项菜单」
-2. 用 `ask_user_question` 把菜单呈现为选项，一次一步
-3. 按所选分支执行：
-   - 缺 CLI → `gitclis_install cli=gh|tea|both`
-   - 环境 token → `gitclis_configure method=env`
-   - 浏览器 OAuth（GitHub）→ `gitclis_configure method=web` 拿设备码 → 用户授权 → `method=poll` 验证
-   - 手动 → `gitclis_set_token`
-4. 用 `gitclis_status` 验证
-
-## 鉴权
-
-- **GitHub**：`GH_TOKEN` / `GITHUB_TOKEN` 环境变量，或 `gh auth login --with-token`，或 `gh auth login --web`（设备流，token 不进聊天）。
-- **Gitea**：`tea login add --name default --url <server> --token <token>`（token 存 `~/.config/tea/config.yml`）。
-
 ## 目录结构
 
 ```text
-dsh/index.js        Host 插件（Cordis）：注册工具 + 注册 git-clis 技能
+dsh/index.js        Host 插件（Cordis）：注册 gh/tea/npm 工具 + 注册 gh-tea-npm 技能
 cordis.patch.yml    dsh bundle 层：insert 本包
-skills/git-clis/    配套技能文档
+skills/gh-tea-npm/  配套技能文档
 package.json        dsh 字段 + exports 指向 dsh/index.js
 ```
 

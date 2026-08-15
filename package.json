@@ -1,7 +1,7 @@
 {
-  "name": "@tommyfang/git-clis-dsh",
+  "name": "@tommyfang/gh-tea-npm-dsh",
   "version": "0.1.0",
-  "description": "DeepSeek Harness (dsh) plugin for GitHub (gh) and Gitea (tea) CLIs: detect/install, guided token config, and issue operations.",
+  "description": "DeepSeek Harness (dsh) plugin for GitHub (gh), Gitea (tea) and npm CLIs: detect/install, guided auth/config (incl. npm token rotation), issue and package tools.",
   "type": "module",
   "license": "MIT",
   "author": "TommyFang2077",
@@ -10,11 +10,15 @@
     "deepseek-harness",
     "github",
     "gitea",
+    "npm",
     "gh",
     "tea",
+    "github-cli",
+    "gitea-cli",
     "issues",
-    "cli",
-    "forge"
+    "publish",
+    "nodejs",
+    "cli"
   ],
   "files": [
     "dsh",
@@ -37,10 +41,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TommyFang2077/git-clis-dsh.git"
+    "url": "git+https://github.com/TommyFang2077/gh-tea-npm-dsh.git"
   },
   "bugs": {
-    "url": "https://github.com/TommyFang2077/git-clis-dsh/issues"
+    "url": "https://github.com/TommyFang2077/gh-tea-npm-dsh/issues"
   },
-  "homepage": "https://github.com/TommyFang2077/git-clis-dsh#readme"
+  "homepage": "https://github.com/TommyFang2077/gh-tea-npm-dsh#readme"
 }

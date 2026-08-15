@@ -1,7 +1,7 @@
-# GitHub (gh) & Gitea (tea) CLI
+# GitHub (gh) + Gitea (tea) + npm CLI
 
-Companion skill for the `git-clis` DSH plugin (TommyFang2077). Operates issues (and
-other forge entities) on GitHub via `gh` and on Gitea via `tea`.
+Companion skill for the `gh-tea-npm` DSH plugin (TommyFang2077). Operates issues on
+GitHub via `gh` and on Gitea via `tea`, and manages npm auth / publishing.
 
 The CLIs are the source of truth for their exact command surface. Prefer their own
 help over anything here: commands and flags change between releases.
@@ -11,36 +11,57 @@ gh help issue            # GitHub issue commands
 gh issue list --help     # exact flags for one subcommand
 tea help issues          # Gitea issue commands
 tea issues list --help
+npm help publish        # npm publish flags
 ```
 
 ## When to use
 
-Use this skill and the `git-clis` plugin tools whenever the user asks to read, create,
-comment on, close, or reopen issues on GitHub or Gitea, or to set up / check forge auth.
+Use this skill and the plugin tools whenever the user asks to read, create, comment
+on, close, or reopen issues on GitHub or Gitea, to install/authenticate gh or tea,
+or to log in to npm, publish a package, or rotate an npm token.
 
-## Guided configuration (gitclis_configure)
+## Guided configuration
 
-Configure a CLI step by step with explicit choices. Never ask open-ended questions;
-always present options via `ask_user_question` and advance one step at a time.
+Configure step by step with explicit choices. Never ask open-ended questions; always
+present options via `ask_user_question` and advance one step at a time.
 
-1. Call `gitclis_configure method=auto` to get the current state and the next-step menu.
-2. Present the menu as options. On the chosen branch, call the matching action:
-   - install a missing CLI: `gitclis_install cli=gh|tea|both`
+gh/tea (`gitclis_configure`):
+
+1. Call `gitclis_configure method=auto` for the state and next-step menu.
+2. - install a missing CLI: `gitclis_install cli=gh|tea|both`
    - env token: `gitclis_configure method=env provider=...`
-   - browser OAuth (GitHub): `gitclis_configure method=web` → show code + URL to the
-     user → after they authorize, `gitclis_configure method=poll flow_id=...`
-   - manual token: `gitclis_set_token provider=... token=...` (token then appears in
-     chat; prefer env or web)
-3. After auth, verify with `gitclis_status`.
+   - browser OAuth (GitHub): `gitclis_configure method=web` → show code + URL →
+     `method=poll` after the user authorizes
+   - manual token: `gitclis_set_token provider=... token=...`
+3. Verify with `gitclis_status`.
+
+npm (`npm_configure`):
+
+1. Call `npm_configure method=auto` for the state and next-step menu.
+2. - browser OAuth: `npm_configure method=web` → show login URL → `method=poll`
+   - automation token: `npm_configure method=token token=<npm_...>`
+3. Publish with `npm_publish` (or `npm_publish dry_run=true`).
+
+## npm token policy (90 days)
+
+npm now enforces a maximum 90-day lifetime on access tokens, including automation
+tokens. A token that expires breaks publishing. Rotate BEFORE it lapses:
+
+- generate a new Automation token at `https://www.npmjs.com/settings/<user>/tokens/new`
+  and write it with `npm_configure method=token`; or
+- re-run `npm_configure method=web` to mint a fresh browser login.
 
 ## Plugin tools
 
 ```text
 gitclis_status        detect gh/tea, versions, auth, env tokens (masked)
-gitclis_configure     guided install + auth flow (auto/env/web/manual/poll)
+gitclis_configure     guided gh/tea install + auth flow (auto/env/web/manual/poll)
 gitclis_install       one-click install of gh and/or tea
 gitclis_set_token     store an auth token for gh and/or tea
 gitclis_token_env     read/import tokens from the environment
+npm_status            detect node/npm, login state, registry
+npm_configure         guided npm auth (auto/web/token/poll)
+npm_publish           npm publish --access public
 ```
 
 ## Authentication
@@ -59,6 +80,13 @@ Gitea (`tea`):
 - tea keeps tokens in `~/.config/tea/config.yml`; there is no first-class token env
   var, so store it with `tea login add`, or set `GITEA_TOKEN` / `TEA_TOKEN` and import
   it with `gitclis_token_env`.
+
+npm:
+
+- browser login: `npm login --auth-type=web` (no token in chat)
+- automation token: `npm config set //registry.npmjs.org/:_authToken <token>`
+- check login: `npm whoami`
+- publish: `npm publish --access public`
 
 ## Issue workflow recipes
 
@@ -121,7 +149,7 @@ The issue tools take a `provider` argument: `github` maps to `gh`, `gitea` maps 
 ## Safety notes
 
 - Read first: prefer `list` / `view` to understand state before mutating.
-- `close` / `reopen` / `comment` mutate state; confirm the target issue number first.
-- Never print a token back into the conversation; the plugin masks env token values.
+- `close` / `reopen` / `comment` / `npm publish` mutate state; confirm targets first.
+- Never print a token back into the conversation; prefer web/device flows.
 - Flags can drift between releases; when a command fails with an unknown flag, read
-  `gh <cmd> --help` or `tea <cmd> --help` and adapt.
+  `gh <cmd> --help`, `tea <cmd> --help`, or `npm <cmd> --help` and adapt.
